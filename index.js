@@ -2,13 +2,14 @@ var Service;
 var Characteristic;
 var HomebridgeAPI;
 var http = require('http');
+var URL = require('url');
 
 module.exports = function(homebridge) {
     Service = homebridge.hap.Service;
     Characteristic = homebridge.hap.Characteristic;
     HomebridgeAPI = homebridge;
 
-    homebridge.registerAccessory("homebridge-http-motion-sensor", "http-motion-sensor", HTTPMotionSensor);
+    homebridge.registerAccessory("homebridge-http-advanced-motion-sensor", "http-advanced-motion-sensor", HTTPMotionSensor);
 };
 
 
@@ -16,18 +17,20 @@ function HTTPMotionSensor(log, config) {
     this.log = log;
     this.name = config.name;
     this.port = config.port;
+    this.fault = Characteristic.StatusFault.NO_FAULT;
     this.motionDetected = false;
-    this.timeout = null;
+    this.tampered = Characteristic.StatusTampered.NOT_TAMPERED;
 
-    this.repeater = config.repeater || [];
+    this.checkinTimeout = 90 * 1000;
+
+    this.motionTimeout = null;
+    this.tamperTimeout = null;
 
     var that = this;
     this.server = http.createServer(function(request, response) {
-        that.httpHandler(that);
+        that.httpHandler(that, request);
         response.end('Successfully requested: ' + request.url);
     });
-
-
 
     // info service
     this.informationService = new Service.AccessoryInformation();
@@ -35,46 +38,100 @@ function HTTPMotionSensor(log, config) {
     this.informationService
         .setCharacteristic(Characteristic.Manufacturer, "PIR Manufacturer")
         .setCharacteristic(Characteristic.Model, config.model || "HC-SR501")
-        .setCharacteristic(Characteristic.SerialNumber, config.serial || "4BD53931-D4A9-4850-8E7D-8A51A842FA29");
-
-
-
+        .setCharacteristic(Characteristic.SerialNumber, config.serial || "2BD53931-D4A9-4850-8E7D-8A51A842FA29");
 
     this.service = new Service.MotionSensor(this.name);
 
     this.service.getCharacteristic(Characteristic.MotionDetected)
-        .on('get', this.getState.bind(this));
+        .on('get', (callback) => { return this.getMotionState(callback) });
 
-    this.server.listen(this.port, function(){
+    this.service.getCharacteristic(Characteristic.StatusTampered)
+        .on('get', (callback) => { return this.getTamperState(callback) });
+
+    this.service.getCharacteristic(Characteristic.StatusFault)
+        .on('get', (callback) => { return this.getFaultState(callback) });
+
+    this.server.listen(this.port, function() {
         that.log("Motion sensor server listening on: http://<your ip goes here>:%s", that.port);
     });
+
+    this.resetFaultTimer();
 }
 
+HTTPMotionSensor.prototype.resetFaultTimer = function() {
 
-HTTPMotionSensor.prototype.getState = function(callback) {
+	if (this.faultTimer) {
+		clearTimeout(this.faultTimer);
+
+		if (this.fault === Characteristic.StatusFault.GENERAL_FAULT) {
+			this.log("Resetting fault.");
+			this.service.updateCharacteristic(Characteristic.StatusFault, Characteristic.StatusFault.NO_FAULT);
+		}
+	}
+
+	this.fault = Characteristic.StatusFault.NO_FAULT;
+
+	this.faultTimer = setTimeout(() => {
+		this.log("No sensor check in recently. Setting fault.");
+		this.fault = Characteristic.StatusFault.GENERAL_FAULT;
+		this.service.updateCharacteristic(Characteristic.StatusFault, this.fault);
+	 }, this.checkinTimeout);
+}
+
+HTTPMotionSensor.prototype.getMotionState = function(callback) {
     callback(null, this.motionDetected);
 };
 
-HTTPMotionSensor.prototype.httpHandler = function(that) {
-    that.log("motion detected");
+HTTPMotionSensor.prototype.getTamperState = function(callback) {
+    callback(null, this.tampered);
+};
 
-    for (var i = 0; i < that.repeater.length; i++) {
-        // that.log("reflecting to " + that.repeater[i]);
-        http.get(that.repeater[i], function(res) {
-            // one could do something with this information
-        });
-    }
+HTTPMotionSensor.prototype.getFaultState = function(callback) {
+    callback(null, this.fault);
+};
 
-    that.motionDetected = true;
-    that.service.getCharacteristic(Characteristic.MotionDetected)
-        .updateValue(that.motionDetected, null, "httpHandler");
-    if (that.timeout) clearTimeout(that.timeout);
-    that.timeout = setTimeout(function() {
-        that.motionDetected = false;
-        that.service.getCharacteristic(Characteristic.MotionDetected)
-            .updateValue(that.motionDetected, null, "httpHandler");
-        that.timeout = null;
-    }, 11 * 1000);
+HTTPMotionSensor.prototype.httpHandler = function(that, request) {
+    let url = URL.parse(request.url);
+
+    switch (url.pathname) {
+    	case '/motion':
+    	that.resetFaultTimer();
+    	that.log('Motion detected');
+	    that.motionDetected = true;
+		that.service.updateCharacteristic(Characteristic.MotionDetected, that.motionDetected);
+
+	    if (that.motionTimer) {
+	    	clearTimeout(that.motionTimer);
+	    }
+
+	    that.motionTimer = setTimeout(function() {
+	    	that.log('Motion trigger off');
+	        that.motionDetected = false;
+	        that.service.updateCharacteristic(Characteristic.MotionDetected, that.motionDetected);
+	        that.motionTimer = null;
+	    }, 11 * 1000);
+		break;
+
+		case '/tamper':
+		that.resetFaultTimer();
+		that.log('Tamper detected');
+    	that.tampered = Characteristic.StatusTampered.TAMPERED;
+    	that.service.updateCharacteristic(Characteristic.StatusTampered, that.tampered);
+
+	    if (that.tamperTimer) clearTimeout(that.tamperTimer);
+
+	    that.tamperTimer = setTimeout(function() {
+	    	that.log('Tamper trigger off');
+	        that.tampered = Characteristic.StatusTampered.NOT_TAMPERED;
+	        that.service.updateCharacteristic(Characteristic.StatusTampered, that.tampered);
+	        that.tamperTimer = null;
+	    }, 30 * 1000);
+	    break;
+
+	    case '/ping':
+	    that.resetFaultTimer();
+	    break;
+	}
 };
 
 HTTPMotionSensor.prototype.getServices = function() {
