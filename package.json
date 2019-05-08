@@ -1,6 +1,6 @@
 {
 	"name": "homebridge-http-advanced-motion-sensor",
-	"version": "0.0.1",
+	"version": "0.0.2",
 	"description": "Homebridge plugin for a remote motion sensor based on http",
 	"main": "index.js",
 	"scripts": {
