@@ -6,7 +6,7 @@ It is based on the [homebridge-http-motion-sensor](https://github.com/lucavb/hom
 
 This fork also removes the repeater function of the original.
 
-A code refactor is slightly overdue. I plan to remake it in line with the rest of my recent plugins.
+The ESP8266 sketch does not support the `fault` and `tamper` features yet.
 
 ## Installation
 
